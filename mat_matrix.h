@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <unistd.h> // uint 
+#include <cmath>    // isnan
 
 #include <limits>
 #include <ostream>
@@ -14,15 +15,15 @@
 #include <iostream>
 #include <stdio.h>
 
-#define MAT_DBG(x)  std::cout<<x<<"\n";
-//#define MAT_DBG(x)
+//#define MAT_DBG(x)  std::cout<<x<<"\n";
+#define MAT_DBG(x)
 
 namespace mat {
 
 
 class matrix;
 
-void swap( matrix &A, matrix &B);
+inline void swap( matrix &A, matrix &B);
 
 
 namespace range {
@@ -280,7 +281,18 @@ inline const range<std::vector<int>,vector_gen> vec(const vector_index &v)
 
 
 
+inline std::vector< std::vector< double > > vec_from_initlist( const std::initializer_list< std::initializer_list<double> > &L)
+{
+	std::vector< std::vector<double> > V(L.size());
 
+	std::initializer_list< std::initializer_list<double> >::const_iterator it;
+	uint i;
+	for( it = L.begin(),i=0; it!=L.end(); it++,i++ )
+		V[i] = *it;
+
+	return V;
+
+}
 
 
 
@@ -290,6 +302,7 @@ friend void swap(matrix &A, matrix &B);
 
 protected:
 
+   // data is stored col - by - col ( not row-by-row as usually in C )
 	std::vector<double> vData;
     uint  iM,iN,iMN;
 
@@ -396,6 +409,46 @@ public:
        	setMN(v.size(),1);
     }
 
+    template<class T>
+    matrix( const std::vector<T> & v )
+    {
+    	vData.reserve( v.size() );
+   	for( auto & x : v ) vData.push_back( (double)x );
+   	setMN( v.size(), 1 );
+    }
+
+    matrix( const std::vector< std::vector<double> > & V)
+    {
+
+    	bool ok = false;
+    	uint i;
+    	do {
+
+    	 uint m = V.size();
+    	 if( m==0) break;
+
+    	 uint n = V[0].size();
+
+		 resize( m, n );
+
+		 for( i=0;i<m;i++)
+		 {
+		 	if( V[i].size() != n) break;
+		 	for(uint j=0;j<n;j++)
+		 		(*this)(i,j) = V[i][j];
+		 }
+
+
+    	 ok = (i==m);
+    	} while( false );
+
+    	if(!ok) *this = ERROR;
+
+    }
+
+    matrix( const std::initializer_list< std::initializer_list<double> > & L)
+    : matrix( vec_from_initlist(L) )
+    {}
 
 protected:
     void init( std::vector<double> &&v)
@@ -417,6 +470,7 @@ public:
     matrix( const std::initializer_list<double>  & list )
     : matrix( std::vector<double>(list) )
     {  }
+
 
 
 
@@ -481,7 +535,7 @@ public:
 	const std::vector<double> &data() const { return vData;}
  	double data( uint i) const { return vData[i]; }
 
-	double * vpdata() { return &vData[0]; }
+	double * pdata() { return &vData[0]; }
 	const double *pdata() const { return &vData[0]; }
 
 
@@ -853,13 +907,12 @@ public:
     // ---- in/out
 
 	void print( std::ostream & os, const char * fmt = "%8.3lg") const;
+	void print( const std::string & fname, const char * fmt = "%8.3lg") const;
 
 
 
 	// ++++ arithmetics : 
 
-
-    // unary
 
 	// transpose
     matrix T( ) const 
@@ -1210,6 +1263,60 @@ public:
 		return S;
 	}
 
+	matrix  hreduce( const std::function<double (double,double)> &fn
+ 					, double S0=0.) const 
+	{
+		matrix out;
+		size_t _m = m();
+		out.resize( _m,1);
+
+		for( size_t i=0; i<_m; i++ )
+		{
+			out(i) = (*this)(i, range::all() ).reduce( fn, S0);
+		}
+		return out;
+	}
+
+	matrix  vreduce( const std::function<double (double,double)> &fn
+  					  , double S0=0.) const 
+	{
+		matrix out;
+		size_t _n = n();
+		out.resize( 1,_n);
+
+		for( size_t j=0; j<_n; j++ )
+		{
+			out(j) = (*this)( range::all(), j ).reduce( fn, S0);
+		}
+		return out;
+	}
+
+
+
+	#define REDUCE_FN( fn, body, S0 )                                                  \
+	double  fn()   const { return  reduce([](double a,double b) -> double { body ;} , S0 ); } \
+	matrix h##fn() const { return hreduce([](double a,double b) -> double { body ;} , S0 ); } \
+	matrix v##fn() const { return vreduce([](double a,double b) -> double { body ;} , S0 ); }
+
+	#define KOMA ,
+
+	REDUCE_FN( max,  return std::max( a KOMA b) , std::numeric_limits<double>::lowest() )
+	REDUCE_FN( min,  return std::min( a KOMA b) , std::numeric_limits<double>::max() )
+	REDUCE_FN( sum,  return a+b, 0 )
+	REDUCE_FN( prod, return a*b, 1 )
+	REDUCE_FN( sumabs, return a + fabs(b), 0 )
+
+
+	double mean() const {
+		return this->sum() / iMN;
+	}
+
+	matrix vmean() const;
+	matrix hmean() const;
+
+#undef REDUCE_FN
+
+
 };
 
 
@@ -1240,11 +1347,13 @@ inline mat::matrix::mref::mref( matrix & M, const std::vector<int> &idx)  // vDa
 
 
 
+
+
 namespace range {
 
 //template <>
 //iterable_index< std::vector<uint > >
-iterable_index< std::vector<int > >::iterable_index( const matrix &m ) 
+inline iterable_index< std::vector<int > >::iterable_index( const matrix &m ) 
   : mVec( std::move(m.idata() ) )
   , rVec(mVec) 
 {
@@ -1257,7 +1366,7 @@ iterable_index< std::vector<int > >::iterable_index( const matrix &m )
 
 
 
-void swap( matrix &A, matrix &B)
+inline void swap( matrix &A, matrix &B)
 {
 	std::swap( A.vData, B.vData);
 	std::swap( A.iM, B.iM);
@@ -1267,7 +1376,7 @@ void swap( matrix &A, matrix &B)
 
 
 
-std::ostream & operator<<( std::ostream & os, const matrix & A)
+inline std::ostream & operator<<( std::ostream & os, const matrix & A)
 {
 	A.print(os);
 	return os;
@@ -1279,25 +1388,25 @@ std::ostream & operator<<( std::ostream & os, const matrix & A)
 // we define differently the commutative operations and non-commutative ops
 
 #define MAT_DEFINE_POINTWISE_OP(op,fwdop,backop)              \
-mat::matrix op(const mat::matrix &_A, const mat::matrix &B) { \
+inline mat::matrix op(const mat::matrix &_A, const mat::matrix &B) { \
    MAT_DBG( "& " << &_A << " " #op " & " << &B )              \
 	mat::matrix A(_A);                                        \
 	fwdop;                                                    \
 	return A;                                                 \
 }                                                             \
                                                               \
-mat::matrix && op( const mat::matrix &A, mat::matrix &&B) {   \
+inline mat::matrix && op( const mat::matrix &A, mat::matrix &&B) {   \
     MAT_DBG( "&" << &A << " " #op " && " << &B )              \
 	backop;                                                   \
     return std::move(B);                                      \
 }                                                             \
                                                               \
-mat::matrix && op( mat::matrix &&A, const mat::matrix &B ) {  \
+inline mat::matrix && op( mat::matrix &&A, const mat::matrix &B ) {  \
     MAT_DBG( "&&" << &A << " " #op " & " << &B )              \
     fwdop;                                                    \
 	return std::move(A);                                      \
 }                                                             \
-mat::matrix && op( mat::matrix &&A, mat::matrix &&B ) {       \
+inline mat::matrix && op( mat::matrix &&A, mat::matrix &&B ) {       \
     MAT_DBG( "&&" << &A << " " #op " && " << &B )             \
 	fwdop;                                                    \
 	return std::move(A);                                      \
@@ -1309,35 +1418,56 @@ MAT_DEFINE_POINTWISE_OP(operator-,A-=B, B.subBA(A) )
 MAT_DEFINE_POINTWISE_OP(operator*,A*=B, B*=A )
 MAT_DEFINE_POINTWISE_OP(operator/,A/=B, B.divBA(A) )
 
-MAT_DEFINE_POINTWISE_OP(operator==, A.inplaceEq(B)    , B.inplaceEq(A)  )
-MAT_DEFINE_POINTWISE_OP(operator!=, A.inplaceNeq(B)   , B.inplaceNeq(A) )
+// it can be missleading, when we write A==B and get not bool, but matrix with results! 
+// that's why we make to special functions for == and !=
+
+MAT_DEFINE_POINTWISE_OP( pointwiseEq , A.inplaceEq(B)    , B.inplaceEq(A)  )
+MAT_DEFINE_POINTWISE_OP( pointwiseNeq, A.inplaceNeq(B)   , B.inplaceNeq(A) )
 MAT_DEFINE_POINTWISE_OP(operator< , A.inplaceLess(B)  , B.inplaceMore(A) )
 MAT_DEFINE_POINTWISE_OP(operator<=, A.inplaceLessEq(B), B.inplaceMoreEq(A) )
 MAT_DEFINE_POINTWISE_OP(operator> , A.inplaceMore(B)  , B.inplaceLess(A) )
 MAT_DEFINE_POINTWISE_OP(operator>=, A.inplaceMoreEq(B), B.inplaceLessEq(A) )
 
+// naive definition of == and !=
+inline bool operator==( const mat::matrix &A, const mat::matrix &B) 
+{
+	if( A.m() != B.m()  || A.n() != B.n() ) return false;
+
+	for(uint i =0; i<A.len(); i++ ) {
+		if( std::isnan(A(i)) && std::isnan(B(i)) ) continue;
+		if( A(i)!=B(i)) return false;
+	}
+
+	return true;
+}
+
+inline bool operator!=( const mat::matrix &A, const mat::matrix &B)
+{
+	return !(A==B);
+}
+
 
 #undef MAT_DEFINE_POINTWISE_OP
 
 #define MAT_DEFINE_CONST_OP(op,fwdop,backop)        \
-mat::matrix op(const mat::matrix &_A, double  d ) { \
+inline mat::matrix op(const mat::matrix &_A, double  d ) { \
    MAT_DBG( "& " << &_A << " " #op "  " << d )      \
 	mat::matrix A(_A);                              \
 	fwdop;                                          \
 	return A;                                       \
 }                                                   \
-mat::matrix op(double  d, const mat::matrix &_A ) { \
+inline mat::matrix op(double  d, const mat::matrix &_A ) { \
    MAT_DBG(  d << " " #op " & " << &_A )            \
 	mat::matrix A(_A);                              \
 	backop;                                         \
 	return A;                                       \
 }                                                   \
-mat::matrix && op( mat::matrix &&A, double  d ) {   \
+inline mat::matrix && op( mat::matrix &&A, double  d ) {   \
    MAT_DBG( "&& " << &A << " " #op "  " << d )      \
 	fwdop;                                          \
 	return std::move(A);                            \
 }                                                   \
-mat::matrix && op(double  d,  mat::matrix &&A ) {   \
+inline mat::matrix && op(double  d,  mat::matrix &&A ) {   \
    MAT_DBG( d << " " #op " && " << &A )             \
 	backop;                                         \
 	return std::move(A);                            \
@@ -1378,75 +1508,110 @@ mat::matrix operator|( const mat::matrix &A, const mat::matrix &B );
 mat::matrix operator%( const mat::matrix &A, const mat::matrix &B);
 
 
+
+
 //
 //  apply 
 //
 
-mat::matrix apply(  const mat::matrix &A, const std::function<double (double)> &fn)
+inline mat::matrix apply(  const mat::matrix &A, const std::function<double (double)> &fn)
 {
 	mat::matrix B( A );
 	B.apply( fn );
 	return B;
 }
 
-mat::matrix && apply( mat::matrix && A, const std::function<double (double)> &fn) 
+inline mat::matrix && apply( mat::matrix && A, const std::function<double (double)> &fn) 
 {
 	A.apply( fn );
 	return std::move(A);
 }
 
-mat::matrix apply( const mat::matrix &A, const std::function<double (uint , uint , double)> &fn)
+inline mat::matrix apply( const mat::matrix &A, const std::function<double (uint , uint , double)> &fn)
 {
 	mat::matrix B(A);
 	B.apply(fn);
 	return B;
 }
 
-mat::matrix apply(  mat::matrix &&A, const std::function<double (uint , uint , double)> &fn)
+inline mat::matrix apply(  mat::matrix &&A, const std::function<double (uint , uint , double)> &fn)
 {
 	A.apply(fn);
 	return std::move(A);
 }
 
-mat::matrix apply( const mat::matrix &A, const mat::matrix &B, const std::function<double (double,double)> &fn)
+inline mat::matrix apply( const mat::matrix &A, const mat::matrix &B, const std::function<double (double,double)> &fn)
 {
 	mat::matrix C(A);
 	C.apply(B,fn);
 	return C;
 }
 
-mat::matrix apply( const mat::matrix &A, const mat::matrix &B, const std::function<double (uint , uint ,double,double)> &fn)
+inline mat::matrix apply( const mat::matrix &A, const mat::matrix &B, const std::function<double (uint , uint ,double,double)> &fn)
 {
 	mat::matrix C(A);
 	C.apply(B,fn);
 	return C;
 }
 
-mat::matrix && apply( mat::matrix &&A, const mat::matrix &B, const std::function<double (double,double)> &fn)
+inline mat::matrix && apply( mat::matrix &&A, const mat::matrix &B, const std::function<double (double,double)> &fn)
 {
 	A.apply(B,fn);
 	return std::move(A);
 }
 
-mat::matrix apply( mat::matrix &&A, const mat::matrix &B, const std::function<double (uint , uint ,double,double)> &fn)
+inline mat::matrix apply( mat::matrix &&A, const mat::matrix &B, const std::function<double (uint , uint ,double,double)> &fn)
 {
 	A.apply(B,fn);
 	return std::move(A);
 }
 
-mat::matrix apply( const mat::matrix &A, double d, const std::function<double (double,double) > &fn)
+inline mat::matrix apply( const mat::matrix &A, double d, const std::function<double (double,double) > &fn)
 {
 	mat::matrix B(A);
 	B.apply( d, fn);
 	return B;
 }
 
-mat::matrix apply( const mat::matrix &A, double d, const std::function<double (uint , uint , double,double) > &fn)
+inline mat::matrix apply( const mat::matrix &A, double d, const std::function<double (uint , uint , double,double) > &fn)
 {
 	mat::matrix B(A);
 	B.apply( d, fn);
 	return B;
 }
+
+
+//
+//  min max 
+//
+
+inline mat::matrix max( const mat::matrix &A, const mat::matrix &B )
+{
+	return apply( A, B, [](double a,double b) -> double { return std::max(a,b); } );	
+}
+
+inline mat::matrix min( const mat::matrix &A, const mat::matrix &B )
+{
+	return apply(A,B, [](double a,double b) -> double { return std::min(a,b); } );
+}
+
+// mean
+
+
+inline mat::matrix mat::matrix::vmean() const {
+	return this->vsum() / m();
+}
+
+inline mat::matrix mat::matrix::hmean() const {
+	return this->hsum() / n();
+}
+
+// sqrt
+
+inline mat::matrix sqrt( const mat::matrix &A) 
+{
+	return apply(A, [](double a) -> double {return ::sqrt(a);} );
+} 
 
 
 namespace construct {
@@ -1490,28 +1655,22 @@ namespace construct {
 		return vec;
 	}
 
-	std::vector<int > iseq( uint  from, uint  to, int step = 1)
+	inline std::vector<int > iseq( uint  from, uint  to, int step = 1)
 	{
 		return seq<int ,int>(from,to,step);
 	}
 
-	std::vector<double> dseq( double from, double to, double step=1. )
+	inline std::vector<double> dseq( double from, double to, double step=1. )
 	{
 		return seq<double>(from,to,step);
 	}
 
-	matrix mseq(double from, double to, double step = 1.)
+	inline matrix mseq(double from, double to, double step = 1.)
 	{
 		return matrix( dseq(from, to, step ) );
 	}
-}
+}  // ns mat::construct
 
-
-namespace range 
-{
-
-
-}
 
 
 }
